@@ -1,0 +1,324 @@
+---
+title: "The Prediction of Online News Popularity"
+author: "Xinyue Zhang"
+date: "3/19/2017"
+output: pdf_document
+---
+```{r,echo=FALSE,warning=FALSE,cache=TRUE}
+# set global chunk options: images will be 7x5 inches
+knitr::opts_chunk$set(fig.width=7, fig.height=5,fig_caption=TRUE)
+options(digits = 4)
+indent1 = "    "
+indent2 = "        "
+suppressMessages(library(data.table))
+suppressMessages(library(Hmisc))
+suppressMessages(library(ggplot2))
+suppressMessages(library(dplyr))
+suppressMessages(library(pROC))
+suppressMessages(library(e1071))
+suppressMessages(library(caret))
+suppressMessages(library(randomForest))
+suppressMessages(library(kernlab))
+suppressMessages(library(stats))
+suppressMessages(library(rpart))
+suppressMessages(library(rattle))
+```
+
+```{r,warning=FALSE,cache=TRUE}
+Online <-read.csv("~/Desktop/OnlineNewsPopularity/OnlineNewsPopularity.csv")
+attach(Online)
+```
+
+```{r,warning=FALSE,cache=TRUE}
+# Remove url and timedelta from the dataset using subset
+news<- Online[,-c(1,2)]
+```
+
+```{r,warning=FALSE,cache=TRUE}
+# Data capping
+par(mfrow=c(1,2))
+hist(Online$shares)
+for(i in (2:ncol(Online))){
+  q = quantile(Online[,i], probs = c(0.05,  0.95))
+  Online[,i] = ifelse(Online[,i] > q[[2]], q[[2]], Online[,i])
+  Online[,i] = ifelse(Online[,i] < q[[1]], q[[1]], Online[,i])
+}
+hist(Online$shares)
+```
+
+```{r,warning=FALSE,cache=TRUE}
+# Center and scale all data except response variable
+news_n <- scale(news[,-c(45)],center=T,scale=T) 
+```
+
+```{r,warning=FALSE,cache=TRUE}
+# set sample median (1400) as threshold 
+onp <- data.frame(news_n,shares)
+y <- ifelse(onp$shares>1400,"popular","unpopular") 
+y <- as.factor(y) 
+onp11<-data.frame(onp[-45],y)
+```
+
+```{r,warning=FALSE,cache=TRUE}
+table(onp11$y)
+```
+
+```{r,warning=FALSE,cache=TRUE}
+any(is.na(onp11))
+```
+
+```{r,warning=FALSE,cache=TRUE}
+# PCA analysis
+out.pc <- prcomp(onp11[,-45], scale=T)
+plot(out.pc,type="l")
+out.pc$rotation[,1:5]
+```
+
+```{r,warning=FALSE,cache=TRUE}
+# Calculate the fisher score for each feature
+var_fisher_all <- c()
+for(variable in names(onp11)[1:44]){
+	var_0 <- subset(onp11, y=="unpopular", select=c(variable))
+	var_1 <- subset(onp11, y=="popular", select=c(variable))
+	var_fisher <- (mean(var_0[,1])-mean(var_1[,1]))^2/(var(var_0[,1])+var(var_1[,1]))
+	var_fisher_all <- c(var_fisher_all, var_fisher)
+}
+# select max from var_fisher_all
+feature <- names(onp11)[1:44]
+fisher<-data.frame(feature,var_fisher_all)
+newdata <- fisher[order(-var_fisher_all),] 
+ggplot(fisher,  aes(x = reorder(feature, var_fisher_all, FUN=min), y=var_fisher_all)) +
+  geom_bar(position="dodge",stat='identity',colour="white") +
+  coord_flip()+
+  scale_fill_grey() +
+  theme_bw()
+```
+
+```{r,warning=FALSE,cache=TRUE}
+# feature selected
+sort_ret <- sort(var_fisher_all, index.return=TRUE, decreasing = TRUE)
+final_features <- feature[sort_ret$ix][1:20]
+pop<-data.frame(onp11[, final_features], onp11$y)
+str(pop)
+attach(pop)
+detach(pop)
+```
+
+```{r,warning=FALSE,cache=TRUE}
+# Create a traning and test dataset
+library(caret)
+# create a list of 80% of the rows in the original dataset we can use for training
+train_index <- createDataPartition(pop$ onp11.y , p=0.80, list=FALSE)
+# select 20% of the data for test
+testset <- pop[-train_index,]
+# use the remaining 80% of data to training the models
+trainset <- pop[train_index,]
+```
+
+```{r,warning=FALSE,cache=TRUE}
+# dimensions of dataset
+dim(trainset)
+
+# list the levels for the class
+levels(trainset$onp11.y)
+
+# summarize the class distribution
+percentage <- prop.table(table(trainset$onp11.y)) * 100
+cbind(freq=table(trainset$onp11.y), percentage=percentage)
+```
+
+
+```{r,warning=FALSE,cache=TRUE}
+# 10-fold cross validation
+control <- trainControl(method="cv", number=10,savePred=T, classProb=T)
+metric <- "Accuracy"
+```
+
+
+```{r,warning=FALSE,cache=TRUE}
+# LDA
+set.seed(7)
+fit.lda <- train(onp11.y~., data=trainset, method="lda", metric=metric, trControl=control)
+fit.lda
+head(fit.lda$pred)
+```
+
+
+```{r,warning=FALSE,cache=TRUE}
+# ROC curve
+set.seed(7)
+pred1 = predict(fit.lda, newdata = testset, type="prob")
+result.roc1 <- roc(testset$onp11.y, pred1$popular)
+plot(result.roc1, print.thres="best", print.thres.best.method="closest.topleft",print.auc=TRUE,auc.polygon=TRUE, main="LDA")
+```
+
+
+```{r,warning=FALSE,cache=TRUE}
+# glm
+set.seed(7)
+fit.glm <- train(onp11.y~., data=trainset, method="glm", metric=metric, trControl=control)
+fit.glm
+```
+
+```{r,warning=FALSE,cache=TRUE}
+# ROC curve
+set.seed(7)
+pred2 = predict(fit.glm, newdata = testset, type="prob")
+result.roc2 <- roc(testset$onp11.y, pred2$popular)
+plot(result.roc2, print.thres="best", print.thres.best.method="closest.topleft",print.auc=TRUE,auc.polygon=TRUE, main="GLM")
+```
+
+```{r,warning=FALSE,cache=TRUE}
+# KNN
+set.seed(7)
+fit.knn <- train(onp11.y~., data=trainset, method="knn", metric=metric, trControl=control)
+fit.knn
+```
+
+
+```{r,warning=FALSE,cache=TRUE}
+# ROC curve
+set.seed(7)
+pred3 = predict(fit.knn, newdata = testset, type="prob")
+result.roc3 <- roc(testset$onp11.y, pred3$popular)
+plot(result.roc3, print.thres="best", print.thres.best.method="closest.topleft",print.auc=TRUE,auc.polygon=TRUE, main="KNN")
+```
+
+
+```{r,warning=FALSE,cache=TRUE}
+# CART
+set.seed(7)
+fit.cart<- train(onp11.y~., data=trainset, method="rpart", metric=metric, trControl=control)
+fit.cart
+```
+
+
+```{r,warning=FALSE,cache=TRUE}
+# ROC curve
+set.seed(7)
+pred4 = predict(fit.cart, newdata = testset, type="prob")
+result.roc4 <- roc(testset$onp11.y, pred4[,2])
+plot(result.roc4, print.thres="best", print.thres.best.method="closest.topleft",print.auc=TRUE,auc.polygon=TRUE, main="CART")
+```
+
+
+```{r,warning=FALSE,cache=TRUE}
+## Desicion Tree for cart tree
+library(rattle)
+fancyRpartPlot(fit.cart$finalModel)
+```
+
+
+```{r,warning=FALSE,cache=TRUE}
+# Random Forest
+set.seed(7)
+rf <- randomForest(onp11.y~., data = pop, subset= train_index, mtry = 2, importance= TRUE,ntree=1000)
+predictions <- predict(rf, testset)
+confusionMatrix(predictions, testset$onp11.y)
+```
+
+
+```{r,echo=FALSE,warning=FALSE,cache=TRUE}
+plot(rf)
+```
+
+
+```{r,warning=FALSE,cache=TRUE}
+# ROC curve
+set.seed(7)
+pred5 = predict(rf, newdata = testset, type="prob")[,2]
+result.roc5 <- roc(testset$onp11.y, pred5)
+plot(result.roc5, print.thres="best", print.thres.best.method="closest.topleft",print.auc=TRUE,auc.polygon=TRUE, main="Random Forest")
+```
+
+
+```{r,warning=FALSE,cache=TRUE}
+# SVM
+set.seed(7)
+fit.svm <- train(onp11.y~., data=trainset, method="svmLinear2", metric=metric, trControl=control)
+fit.svm
+head(fit.svm$pred)
+``` 
+
+
+```{r,warning=FALSE,cache=TRUE}
+# ROC curve
+set.seed(7)
+pred6 <- predict(fit.svm, newdata = testset, type="prob")
+result.roc6 <- roc(testset$onp11.y, pred6)
+plot(result.roc6, print.thres="best", print.thres.best.method="closest.topleft",print.auc=TRUE,auc.polygon=TRUE, main="SVM")
+```
+
+\begin{table}[ht]
+\centering
+\caption{Comparison of classification methods}
+\label{my-label}
+\begin{tabular}{lllll}
+ \hline
+     & Accuracy & Sensitivity & Specificity & AUC \\
+LDA  & 0.639    & 0.608      & 0.669      & 0.682   \\
+GLM  & 0.643    & 0.654      & 0.627      & 0.684  \\
+KNN  & 0.627    & 0.642      & 0.583      & 0.651  \\
+CART & 0.615    & 0.634      & 0.519      & 0.619    \\
+RF   & 0.656    & 0.669      & 0.687      & 0.713  \\
+SVM  & 0.629    & 0.607      & 0.649      & 0.668    
+\end{tabular}
+\end{table}
+
+
+```{r,warning=FALSE,cache=TRUE}
+plot(result.roc1,col="blue")
+plot(result.roc2,col="green",add=TRUE)
+plot(result.roc3,col="red",add=TRUE)
+plot(result.roc4,col="pink",add=TRUE)
+plot(result.roc5,col="black",add=TRUE)
+plot(result.roc6,col="orange",add=TRUE)
+legend("bottomright",c("LDA","GLM","KNN", "CART","Random Forest","SVM"),lty = 1, col = c("blue","green","red","pink","black","Orange"))
+```
+
+```{r}
+# importance plot
+library(randomForest)
+varImpPlot(rf)
+```
+
+
+\subsection{No Feature Selection}
+```{r}
+# Create a 80% traning and 20% test dataset
+train.onp11<- createDataPartition(onp11$y , p=0.80,list=FALSE)
+test.set <- onp11[-train.onp11,]
+train.set <- onp11[train.onp11,]
+```
+
+```{r,echo=FALSE,warning=FALSE,cache=TRUE}
+# glm
+set.seed(7)
+fit.glm2 <- train(y~., data=train.set, method="glm", metric=metric, trControl=control)
+fit.glm2
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
