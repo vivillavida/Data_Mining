@@ -1,6 +1,5 @@
 ---
 title: "The Prediction of Online News Popularity"
-author: "Xinyue Zhang"
 date: "3/19/2017"
 output: pdf_document
 ---
